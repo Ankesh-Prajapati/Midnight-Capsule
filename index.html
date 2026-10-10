@@ -57,6 +57,7 @@ button:focus-visible{outline:1px solid var(--brass);outline-offset:3px}
   <nav>
     <button id="btnSound" type="button">Sound on</button>
     <button id="btnCopy" type="button">Copy text</button>
+    <button id="btnSave" type="button">Save page</button>
     <button id="btnNew" type="button">New sheet</button>
   </nav>
 </header>
@@ -551,7 +552,7 @@ const {bars,keys,barFor,charToCode,carriage,paperGroup,platenGroup,knobs,lever,l
 const UP=64, BACK=210;
 const carX=c=>PW/2-(MX+c*CW+CW/2);
 const feedY=l=>TOP+l*LH;
-const ST={col:0,line:0,cells:new Map(),sheets:[],returning:false,busyNew:false,pending:0,belled:false,queue:[],replaying:0,direct:false,timeline:[],typed:false};
+const ST={col:0,line:0,cells:new Map(),sheets:[],returning:false,busyNew:false,pending:0,belled:false,queue:[],replaying:0,direct:false,lastDue:0,timeline:[],typed:false};
 const spring=(x,k,c)=>({x,v:0,t:x,k,c});
 function stepSpring(s,dt){const n=Math.max(1,Math.ceil(dt/.004)),h=dt/n;for(let i=0;i<n;i++){s.v+=(s.k*(s.t-s.x)-s.c*s.v)*h;s.x+=s.v*h;}}
 const carr=spring(carX(0),1400,62), feed=spring(0,700,42), dent=spring(0,3000,70), lift=spring(0,900,50);
@@ -606,9 +607,13 @@ function pressKey(code,autoRelease){
   const k=keys[code];if(!k)return;k.target=1;k.hold=performance.now()+85;
   if(autoRelease)later(100,()=>{k.target=0;});
 }
-function startBar(bar,ch,start){
-  later(Math.max(0,start-performance.now()),()=>{bar.state='up';bar.t0=start;bar.from=bar.th;});
-  later(start+UP-performance.now(),(due)=>{
+function nextDue(minStart){
+  const t=Math.max(performance.now(),minStart||0),due=Math.max(t+UP,ST.lastDue+1);ST.lastDue=due;return due;
+}
+function startBar(bar,ch,due){
+  const start=due-UP,n=performance.now();
+  later(Math.max(0,start-n),()=>{bar.state='up';bar.t0=start;bar.from=bar.th;});
+  later(due-n,()=>{
     bar.th=TH_S;bar.state='back';bar.t0=due;bar.lock=due+30;
     impact(ch,due);
   });
@@ -635,15 +640,16 @@ function typeChar(ch,code){
   if(blocked()){if(ST.queue.length<60)ST.queue.push(['c',ch,code]);return;}
   if(ST.col+ST.pending>=MAXCOL){lockHit(code);return;}
   const bar=barFor[code]||fallbackBar(ch);
-  const now=performance.now(),start=Math.max(now,(bar.lock||0));
+  const due=nextDue(bar.lock||0);
   ST.pending++;sound.key();
-  startBar(bar,ch,start);
+  startBar(bar,ch,due);
 }
 function typeSpace(){
   if(blocked()){if(ST.queue.length<60)ST.queue.push(['s']);return;}
   if(ST.col+ST.pending>=MAXCOL){lockHit();return;}
   ST.pending++;sound.space();
-  later(UP,()=>{
+  const due=nextDue();
+  later(due-performance.now(),()=>{
     ST.col++;ST.pending=Math.max(0,ST.pending-1);carr.t=carX(ST.col);shake=Math.max(shake,.02);
     if(ST.col>=BELLCOL&&!ST.belled){ST.belled=true;later(70,()=>sound.bell());}
     if(ST.col>=MAXCOL)say('Margin reached. Press Return.',3200);
@@ -652,7 +658,8 @@ function typeSpace(){
 }
 function typeBack(){
   if(blocked()){if(ST.queue.length<60)ST.queue.push(['b']);return;}
-  later(UP,()=>{ if(ST.col>0){ST.col--;carr.t=carX(ST.col);sound.back();updateStatus();save();} else sound.lock(); });
+  const due=nextDue();
+  later(due-performance.now(),()=>{ if(ST.col>0){ST.col--;carr.t=carX(ST.col);sound.back();updateStatus();save();} else sound.lock(); });
 }
 function drain(){
   if(!ST.queue.length)return;
@@ -666,18 +673,22 @@ function drain(){
 }
 function typeReturn(){
   if(blocked()){if(ST.queue.length<60)ST.queue.push(['r']);return;}
-  const col=ST.col;
+  ST.returning=true;
   leverAnim={t0:performance.now(),dur:520};
-  if(ST.line+1>=MAXLINE){newSheet();return;}
-  ST.returning=true;ST.line++;feed.t=feedY(ST.line);sound.feed();updateStatus();save();
-  const dur=col>0?clamp(190+col*11,190,640):0;
-  later(50,()=>{
-    if(dur>0){tween={t0:performance.now(),dur,from:carr.x,to:carX(0)};sound.ret(dur/1000);}
-  });
-  later(50+dur+(dur>0?0:90),(due)=>{
-    ST.col=0;ST.belled=false;ST.returning=false;carr.t=carX(0);
-    if(dur>0){carr.x=carX(0);carr.v=7;sound.stop();shake=Math.max(shake,.09);dent.v=-2.6;}
-    updateStatus();drain();
+  const due=nextDue();
+  later(due-performance.now(),()=>{
+    const col=ST.col;
+    if(ST.line+1>=MAXLINE){ST.returning=false;newSheet();return;}
+    ST.line++;feed.t=feedY(ST.line);sound.feed();updateStatus();save();
+    const dur=col>0?clamp(190+col*11,190,640):0;
+    later(50,()=>{
+      if(dur>0){tween={t0:performance.now(),dur,from:carr.x,to:carX(0)};sound.ret(dur/1000);}
+    });
+    later(50+dur+(dur>0?0:90),()=>{
+      ST.col=0;ST.belled=false;ST.returning=false;carr.t=carX(0);
+      if(dur>0){carr.x=carX(0);carr.v=7;sound.stop();shake=Math.max(shake,.09);dent.v=-2.6;}
+      updateStatus();drain();
+    });
   });
 }
 function newSheet(){
@@ -749,6 +760,21 @@ $('#btnCopy').addEventListener('click',e=>{
   const done=()=>say('Text copied.',2200);
   const fb=()=>{try{const ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done();}catch(_){say('Copy was blocked by the browser.',2800);}};
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done,fb);else fb();
+});
+$('#btnSave').addEventListener('click',e=>{
+  e.currentTarget.blur();
+  if(!ST.cells.size){say('Nothing typed on this sheet yet.',2200);return;}
+  try{
+    const S=paper.strips,w=S[0].canvas.width,sh=S[0].canvas.height,c=M.cv(w,sh*S.length),g=c.getContext('2d');
+    S.forEach((s,i)=>g.drawImage(s.canvas,0,i*sh));
+    c.toBlob(b=>{
+      if(!b){say('Could not save the page.',2800);return;}
+      const d=new Date(),p=n=>String(n).padStart(2,'0');
+      const name=`midnight-capsule-${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
+      const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(u),4000);say('Page saved as '+name,3600);
+    },'image/png');
+  }catch(err){say('Could not save the page.',2800);}
 });
 $('#btnNew').addEventListener('click',e=>{e.currentTarget.blur();confirmEl.hidden=!confirmEl.hidden;if(!confirmEl.hidden)$('#confirmYes').focus();});
 $('#confirmYes').addEventListener('click',()=>{hideConfirm();unlock();newSheet();sink.focus({preventScroll:true});});
